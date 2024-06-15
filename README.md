@@ -79,10 +79,20 @@ aws s3 cp examples/template s3://my-s3-bucket/github.com/fogfish/craft/examples/
 The event is a deployment context for AWS CDK template. Use `cdk.context.json` to specify the context and store the file into s3 bucket.
 
 ```bash
-echo '{"acc": "demo"}' > demo.cdk.context.json
+echo '{"acc": "demo"}' > cdk.context.json
 
-aws s3 cp demo.cdk.context.json s3://my-s3-bucket/github.com/fogfish/craft/examples/template/demo.cdk.context.json
+aws s3 cp cdk.context.json s3://my-s3-bucket/github.com/fogfish/craft/examples/template/demo.cdk.context.json
 ```
+
+### (3) Modules
+
+The service uses path of `cdk.context.json` to determine the context of the application. In rare cases, the deployable application is subdirectory of the context. Use prefix schema (`prefix__`) in the file name to specify this requirement. 
+
+```bash
+aws s3 cp cdk.context.json s3://my-s3-bucket/github.com/fogfish/craft/examples/template/submod__demo.cdk.context.json
+```
+
+The service downloads the context `s3://my-s3-bucket/github.com/fogfish/craft/examples/template` than changes working dir to `submod` before triggering deployments.
 
 # FAQ
 
