@@ -54,23 +54,25 @@ func (s *Service) Run(rcv <-chan swarm.Msg[*events.S3EventRecord], ack chan<- sw
 			continue
 		}
 
+		// naming convention for context file
+		// module__job-name.cdk.context.json
 		craft_cdk_context := filepath.Base(key)
 		craft_target := filepath.Dir(key)
 		craft_source := fmt.Sprintf("s3://%s/%s", evt.S3.Bucket.Name, craft_target)
 
-		scope := craft_cdk_context[:len(craft_cdk_context)-len("cdk.context.json")-1]
-		target := filepath.Base(craft_target)
-		jobname := fmt.Sprintf("%s-%s", target, scope)
+		craft_mod := modName(key)
+		craft_job := jobName(key)
 
 		val, err := s.api.SubmitJob(context.Background(),
 			&batch.SubmitJobInput{
-				JobName:       aws.String(jobname),
+				JobName:       aws.String(craft_job),
 				JobDefinition: aws.String(s.deploy),
 				JobQueue:      aws.String(s.queue),
 				ContainerOverrides: &types.ContainerOverrides{
 					Environment: []types.KeyValuePair{
 						{Name: aws.String("CRAFT_SOURCE"), Value: aws.String(craft_source)},
 						{Name: aws.String("CRAFT_TARGET"), Value: aws.String(craft_target)},
+						{Name: aws.String("CRAFT_MODULE"), Value: aws.String(craft_mod)},
 						{Name: aws.String("CRAFT_CDK_CONTEXT"), Value: aws.String(craft_cdk_context)},
 					},
 				},
@@ -85,4 +87,21 @@ func (s *Service) Run(rcv <-chan swarm.Msg[*events.S3EventRecord], ack chan<- sw
 		slog.Info("job sceduled", "key", key, "job", val.JobId)
 		ack <- msg
 	}
+}
+
+func modName(key string) string {
+	base := filepath.Base(key)
+	seq := strings.Split(base, "__")
+	if len(seq) == 2 {
+		return seq[0]
+	}
+
+	return "."
+}
+
+func jobName(key string) string {
+	dir := filepath.Base(filepath.Dir(key))
+	uid := strings.TrimSuffix(filepath.Base(key), ".cdk.context.json")
+
+	return fmt.Sprintf("%s-%s", dir, uid)
 }
