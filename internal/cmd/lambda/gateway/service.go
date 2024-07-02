@@ -9,99 +9,75 @@
 package main
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"path/filepath"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/batch"
-	"github.com/aws/aws-sdk-go-v2/service/batch/types"
+	craftevents "github.com/fogfish/craft/internal/events"
 	"github.com/fogfish/swarm"
 )
 
-type JobQueue interface {
-	SubmitJob(ctx context.Context, params *batch.SubmitJobInput, optFns ...func(*batch.Options)) (*batch.SubmitJobOutput, error)
+type Scheduler interface {
+	Schedule(evt craftevents.EventCraft) error
 }
 
 type Service struct {
-	api    JobQueue
-	queue  string
-	deploy string
+	fsys      fs.FS
+	scheduler Scheduler
 }
 
-func New(api JobQueue, queue string, deploy string) *Service {
+func New(fsys fs.FS, scheduler Scheduler) *Service {
 	return &Service{
-		api:    api,
-		queue:  queue,
-		deploy: deploy,
+		fsys:      fsys,
+		scheduler: scheduler,
 	}
 }
 
 func (s *Service) Run(rcv <-chan swarm.Msg[*events.S3EventRecord], ack chan<- swarm.Msg[*events.S3EventRecord]) {
 	for msg := range rcv {
-		evt := msg.Object
-		if evt == nil {
+		if msg.Object == nil {
 			ack <- msg
 			continue
 		}
 
-		key := evt.S3.Object.Key
-		if !strings.HasSuffix(key, "cdk.context.json") {
-			ack <- msg
-			continue
+		key := msg.Object.S3.Object.Key
+		if strings.HasSuffix(key, craftevents.EVENT_CRAFT) {
+			if err := s.onEvtCraft(msg.Object); err != nil {
+				ack <- msg.Fail(err)
+				continue
+			}
 		}
 
-		// naming convention for context file
-		// module__job-name.cdk.context.json
-		craft_cdk_context := filepath.Base(key)
-		craft_target := filepath.Dir(key)
-		craft_source := fmt.Sprintf("s3://%s/%s", evt.S3.Bucket.Name, craft_target)
-
-		craft_mod := modName(key)
-		craft_job := jobName(key)
-
-		val, err := s.api.SubmitJob(context.Background(),
-			&batch.SubmitJobInput{
-				JobName:       aws.String(craft_job),
-				JobDefinition: aws.String(s.deploy),
-				JobQueue:      aws.String(s.queue),
-				ContainerOverrides: &types.ContainerOverrides{
-					Environment: []types.KeyValuePair{
-						{Name: aws.String("CRAFT_SOURCE"), Value: aws.String(craft_source)},
-						{Name: aws.String("CRAFT_TARGET"), Value: aws.String(craft_target)},
-						{Name: aws.String("CRAFT_MODULE"), Value: aws.String(craft_mod)},
-						{Name: aws.String("CRAFT_CDK_CONTEXT"), Value: aws.String(craft_cdk_context)},
-					},
-				},
-			},
-		)
-		if err != nil {
-			slog.Error("job failed", "key", key, "err", err)
-			ack <- msg.Fail(err)
-			continue
-		}
-
-		slog.Info("job sceduled", "key", key, "job", val.JobId)
 		ack <- msg
 	}
 }
 
-func modName(key string) string {
-	base := filepath.Base(key)
-	seq := strings.Split(base, "__")
-	if len(seq) == 2 {
-		return seq[0]
+func (s *Service) onEvtCraft(evt *events.S3EventRecord) error {
+	fd, err := s.fsys.Open("/" + evt.S3.Object.Key)
+	if err != nil {
+		slog.Error("failed to access event", "key", evt.S3.Object.Key, "err", err)
+		return err
+	}
+	defer fd.Close()
+
+	var req craftevents.EventCraft
+	if err := json.NewDecoder(fd).Decode(&req); err != nil {
+		slog.Error("failed to decode event", "key", evt.S3.Object.Key, "err", err)
+		return err
 	}
 
-	return "."
-}
+	if req.UID == "" || req.Module == "" || req.Context == nil {
+		slog.Error("failed to decode event", "key", evt.S3.Object.Key, "err", "invalid event format")
+		return fmt.Errorf("invalid event format")
+	}
 
-func jobName(key string) string {
-	dir := filepath.Base(filepath.Dir(key))
-	uid := strings.TrimSuffix(filepath.Base(key), ".cdk.context.json")
+	if err := s.scheduler.Schedule(req); err != nil {
+		slog.Error("failed to schedule event", "key", evt.S3.Object.Key, "err", err)
+		return err
+	}
 
-	return fmt.Sprintf("%s-%s", dir, uid)
+	return nil
 }

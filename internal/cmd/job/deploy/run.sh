@@ -3,31 +3,25 @@ set -eu
 
 ##
 ## Required ENV
-##   CRAFT_SOURCE 
-##     source code folder to download from s3
-##     (e.g. s3://craft/github.com/fogfish/app)
-##
-##   CRAFT_TARGET
-##     source code folder to store code
-##     (e.g. github.com/fogfish/app)
+##   CRAFT_BUCKET
+##     S3 bucket where application templates stores
+##     (e.g. craft)
 ##
 ##   CRAFT_MODULE
 ##     source code module to build
-##     (e.g. app)
+##     (e.g. github.com/fogfish/app)
 ##
 ##   CRAFT_CDK_CONTEXT
-##     context for AWS CDK application
-##     (e.g. demo.cdk.context.json)
+##     context for AWS CDK application, inline JSON object
+##     (e.g. {"acc": "xxx"})
 ##
 
-mkdir -p /go/src/$CRAFT_TARGET
+mkdir -p /go/src/$CRAFT_MODULE
 
-cd /go/src/$CRAFT_TARGET
+cd /go/src/$CRAFT_MODULE
 
-aws s3 cp $CRAFT_SOURCE . --recursive
+aws s3 cp s3://$CRAFT_BUCKET/$CRAFT_MODULE . --recursive
 
-cp $CRAFT_CDK_CONTEXT $CRAFT_MODULE/cdk.context.json
-
-cd $CRAFT_MODULE
+echo $CRAFT_CDK_CONTEXT > cdk.context.json
 
 cdk deploy

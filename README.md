@@ -57,6 +57,9 @@ cdk deploy -c source-code=my-s3-bucket
 ✨  Total time: 79.66s
 ```
 
+Note: Docker is required for building and running the solution because the AWS CDK uses it for automat assemble of assets. Use colima on MacOS.
+
+
 ## Interfaces
 
 The solution implements two type of interfaces implemented over AWS S3 (1) for definition of cloud resource templates and (2) for business events. 
@@ -76,38 +79,40 @@ aws s3 cp examples/template s3://my-s3-bucket/github.com/fogfish/craft/examples/
 
 ### (2) Events
 
-The event is a deployment context for AWS CDK template. Use `cdk.context.json` to specify the context and store the file into s3 bucket.
+The event is JSON object that should be compliant to [schema](./internal/events/events.go). Clients writes JSON object into S3 bucket to trigger the crafting job.
 
 ```bash
-echo '{"acc": "demo"}' > cdk.context.json
+echo '{
+  "uid": "123-456-789",
+  "module": "github.com/fogfish/craft/examples/template",
+  "context": {
+    "acc": "demo"
+  }
+}' > demo.craft.event.json
 
-aws s3 cp cdk.context.json s3://my-s3-bucket/github.com/fogfish/craft/examples/template/demo.cdk.context.json
+aws s3 cp demo.craft.event.json s3://my-s3-bucket/demo.craft.event.json
 ```
 
-### (3) Modules
-
-The service uses path of `cdk.context.json` to determine the context of the application. In rare cases, the deployable application is subdirectory of the context. Use prefix schema (`prefix__`) in the file name to specify this requirement. 
+Note: unique event id (`uid`) allows to follow up the deployment status using AWS Batch ListJobs API: 
 
 ```bash
-aws s3 cp cdk.context.json s3://my-s3-bucket/github.com/fogfish/craft/examples/template/submod__demo.cdk.context.json
+aws batch list-jobs --job-queue craft-vX --filters name=JOB_NAME,values=123-456-789
 ```
 
-The service downloads the context `s3://my-s3-bucket/github.com/fogfish/craft/examples/template` than changes working dir to `submod` before triggering deployments.
 
 # FAQ
 
 ## Why not use standard CI/CD?
 
-Our solution separates the deployment pipelines of software components from tenant-specific feature provisioning. Using GitHub Actions as the primary CI/CD solution, it is challenging to achieve proper isolation between code and configuration.
+Our solution decouples the deployment pipelines of software components from tenant-specific feature provisioning. Utilizing GitHub Actions as the primary CI/CD tool presents challenges in maintaining proper isolation between code and configuration.
 
 ## Why not use AWS CodeBuild?
 
-Currently, AWS CodeBuild offers EC2 or Lambda as compute environments. EC2 is somewhat slow in provisioning compute resources, while Lambda has a limited execution time of 15 minutes, which is insufficient for covering all corner cases.
+Currently, AWS CodeBuild offers EC2 and Lambda as compute environments. EC2 is relatively slow in provisioning resources, whereas Lambda's 15-minute execution limit is often insufficient for handling all edge cases.
 
 ## What are the advantages of AWS Batch?
 
-AWS Batch supports Fargate and allows the use of spot instances, providing a robust "serverless" approach for building compute environments. It is easy to configure containers for job definitions and use queue-like interfaces to submit orchestration jobs. The solution is generally scalable for any kind of jobs required for running SaaS.   
-
+AWS Batch supports Fargate and allows the use of spot instances, offering a robust "serverless" approach for building compute environments. It simplifies the configuration of containers for job definitions and enables the submission of orchestration jobs through queue-like interfaces. This solution is highly scalable and suitable for any type of job required for running SaaS applications.
 
 
 ## How To Contribute
