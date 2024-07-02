@@ -22,6 +22,7 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambdaeventsources"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awss3"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/fogfish/craft/internal/events"
 	"github.com/fogfish/scud"
 	"github.com/fogfish/swarm/broker/events3"
 	"github.com/fogfish/tagver"
@@ -176,23 +177,22 @@ func (c *Craft) createGateway(props *CraftProps) {
 			EventSource: &awslambdaeventsources.S3EventSourceProps{
 				Events: &[]awss3.EventType{
 					awss3.EventType_OBJECT_CREATED,
-					awss3.EventType_OBJECT_REMOVED,
 				},
 				Filters: &[]*awss3.NotificationKeyFilter{
-					{Suffix: jsii.String("cdk.context.json")},
+					{Suffix: jsii.String(events.EVENT_CRAFT)},
 				},
 			},
 			Lambda: &scud.FunctionGoProps{
-				SourceCodePackage: "github.com/fogfish/craft",
-				SourceCodeLambda:  "internal/cmd/lambda/gateway",
+				SourceCodeModule: "github.com/fogfish/craft",
+				SourceCodeLambda: "internal/cmd/lambda/gateway",
 				FunctionProps: &awslambda.FunctionProps{
 					FunctionName: awscdk.Aws_STACK_NAME(),
 					Timeout:      awscdk.Duration_Seconds(jsii.Number(5.0)),
 					Environment: &map[string]*string{
-						"CONFIG_VSN":        jsii.String(string(props.Version)),
-						"CONFIG_BUS":        c.sourceCode.BucketName(),
-						"CONFIG_QUEUE":      c.queue.JobQueueName(),
-						"CONFIG_JOB_DEPLOY": c.jobDeploy.JobDefinitionArn(),
+						"CONFIG_VSN":             jsii.String(string(props.Version)),
+						"CONFIG_S3":              c.sourceCode.BucketName(),
+						"CONFIG_BATCH_QUEUE":     c.queue.JobQueueName(),
+						"CONFIG_BATCH_JOB_CRAFT": c.jobDeploy.JobDefinitionArn(),
 					},
 				},
 			},
@@ -200,4 +200,5 @@ func (c *Craft) createGateway(props *CraftProps) {
 	)
 
 	c.jobDeploy.GrantSubmitJob(sink.Handler, c.queue)
+	c.broker.Bucket.GrantRead(sink.Handler, nil)
 }

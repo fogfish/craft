@@ -10,16 +10,152 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"testing"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/batch"
 	"github.com/aws/aws-sdk-go-v2/service/batch/types"
+	"github.com/fogfish/craft/internal/scheduler"
 	"github.com/fogfish/it/v2"
 	"github.com/fogfish/swarm"
 )
+
+func TestSubmitJob(t *testing.T) {
+	service := mockService(`{
+	  "uid": "123-456-789",
+		"module": "github.com/fogfish/craft",
+		"context": {"acc": "test"}
+	}`)
+
+	rcv := make(chan swarm.Msg[*events.S3EventRecord])
+	ack := make(chan swarm.Msg[*events.S3EventRecord])
+	go service.Run(rcv, ack)
+
+	rcv <- swarm.Msg[*events.S3EventRecord]{
+		Ctx: swarm.NewContext(context.TODO(), "test", "na"),
+		Object: &events.S3EventRecord{
+			S3: events.S3Entity{
+				Bucket: events.S3Bucket{Name: "test-s3"},
+				Object: events.S3Object{Key: "test.craft.event.json"},
+			},
+		},
+	}
+	msg := <-ack
+	it.Then(t).Should(it.Nil(msg.Ctx.Error))
+}
+
+func TestSubmitJobFailed(t *testing.T) {
+	service := mockService(`{
+	  "uid": "123-456-789",
+		"module": "github.com/fogfish/unexpected",
+		"context": {"acc": "test"}
+	}`)
+
+	rcv := make(chan swarm.Msg[*events.S3EventRecord])
+	ack := make(chan swarm.Msg[*events.S3EventRecord])
+	go service.Run(rcv, ack)
+
+	rcv <- swarm.Msg[*events.S3EventRecord]{
+		Ctx: swarm.NewContext(context.TODO(), "test", "na"),
+		Object: &events.S3EventRecord{
+			S3: events.S3Entity{
+				Bucket: events.S3Bucket{Name: "test-s3"},
+				Object: events.S3Object{Key: "test.craft.event.json"},
+			},
+		},
+	}
+	msg := <-ack
+	it.Then(t).ShouldNot(it.Nil(msg.Ctx.Error))
+}
+
+func TestInvalidEvent(t *testing.T) {
+	service := mockService(`{
+		"context": {"acc": "test"}
+	}`)
+
+	rcv := make(chan swarm.Msg[*events.S3EventRecord])
+	ack := make(chan swarm.Msg[*events.S3EventRecord])
+	go service.Run(rcv, ack)
+
+	rcv <- swarm.Msg[*events.S3EventRecord]{
+		Ctx: swarm.NewContext(context.TODO(), "test", "na"),
+		Object: &events.S3EventRecord{
+			S3: events.S3Entity{
+				Bucket: events.S3Bucket{Name: "test-s3"},
+				Object: events.S3Object{Key: "test.craft.event.json"},
+			},
+		},
+	}
+	msg := <-ack
+	it.Then(t).ShouldNot(it.Nil(msg.Ctx.Error))
+}
+
+func TestUnknownEvent(t *testing.T) {
+	service := mockService(`{
+	  "uid": "123-456-789",
+		"module": "github.com/fogfish/craft",
+		"context": {"acc": "test"}
+	}`)
+
+	rcv := make(chan swarm.Msg[*events.S3EventRecord])
+	ack := make(chan swarm.Msg[*events.S3EventRecord])
+	go service.Run(rcv, ack)
+
+	t.Run("EmptyS3Event", func(t *testing.T) {
+		rcv <- swarm.Msg[*events.S3EventRecord]{
+			Ctx: swarm.NewContext(context.TODO(), "test", "na"),
+		}
+		msg := <-ack
+		it.Then(t).Should(it.Nil(msg.Ctx.Error))
+	})
+
+	t.Run("UnknownKey", func(t *testing.T) {
+		rcv <- swarm.Msg[*events.S3EventRecord]{
+			Ctx: swarm.NewContext(context.TODO(), "test", "na"),
+			Object: &events.S3EventRecord{
+				S3: events.S3Entity{
+					Object: events.S3Object{Key: "some-key"},
+				},
+			},
+		}
+		msg := <-ack
+		it.Then(t).Should(it.Nil(msg.Ctx.Error))
+	})
+}
+
+//------------------------------------------------------------------------------
+
+func mockService(evt string) *Service {
+	var ctx struct {
+		Context json.RawMessage `json:"context"`
+	}
+	json.Unmarshal([]byte(evt), &ctx)
+
+	batch := &mock{
+		returnVal: &batch.SubmitJobOutput{},
+		expectVal: &batch.SubmitJobInput{
+			JobDefinition: aws.String("test-job"),
+			JobQueue:      aws.String("test-queue"),
+			ContainerOverrides: &types.ContainerOverrides{
+				Environment: []types.KeyValuePair{
+					{Name: aws.String("CRAFT_BUCKET"), Value: aws.String("test-s3")},
+					{Name: aws.String("CRAFT_MODULE"), Value: aws.String("github.com/fogfish/craft")},
+					{Name: aws.String("CRAFT_CDK_CONTEXT"), Value: aws.String(string(ctx.Context))},
+				},
+			},
+		},
+	}
+
+	scheduler := scheduler.New(batch, "test-queue", "test-job", "test-s3")
+
+	fsys := fsys{returnVal: []byte(evt)}
+
+	return New(fsys, scheduler)
+}
 
 type mock struct {
 	expectVal *batch.SubmitJobInput
@@ -40,82 +176,23 @@ func (m *mock) SubmitJob(ctx context.Context, params *batch.SubmitJobInput, optF
 		env[aws.ToString(e.Name)] = aws.ToString(e.Value)
 	}
 	for _, e := range m.expectVal.ContainerOverrides.Environment {
-		if x, has := env[aws.ToString(e.Name)]; !has || x != aws.ToString(e.Value) {
-			return nil, fmt.Errorf("unexpected environment override")
+		key := aws.ToString(e.Name)
+		if x, has := env[key]; !has || x != aws.ToString(e.Value) {
+			return nil, fmt.Errorf("unexpected environment override: %s, %s", key, x)
 		}
 	}
 
 	return m.returnVal, nil
 }
 
-func TestService(t *testing.T) {
-	q := &mock{
-		returnVal: &batch.SubmitJobOutput{},
-		expectVal: &batch.SubmitJobInput{
-			JobDefinition: aws.String("test-job"),
-			JobQueue:      aws.String("test-queue"),
-			ContainerOverrides: &types.ContainerOverrides{
-				Environment: []types.KeyValuePair{
-					{Name: aws.String("CRAFT_SOURCE"), Value: aws.String("s3://craft/github.com/fogfish/craft")},
-					{Name: aws.String("CRAFT_TARGET"), Value: aws.String("github.com/fogfish/craft")},
-					{Name: aws.String("CRAFT_CDK_CONTEXT"), Value: aws.String("test.cdk.context.json")},
-				},
-			},
-		},
-	}
+type file []byte
 
-	service := New(q, "test-queue", "test-job")
+func (file) Stat() (fs.FileInfo, error)   { return nil, nil }
+func (file) Close() error                 { return nil }
+func (f file) Read(b []byte) (int, error) { return copy(b, f), nil }
 
-	rcv := make(chan swarm.Msg[*events.S3EventRecord])
-	ack := make(chan swarm.Msg[*events.S3EventRecord])
-	go service.Run(rcv, ack)
-
-	t.Run("SubmitJob", func(t *testing.T) {
-		rcv <- swarm.Msg[*events.S3EventRecord]{
-			Ctx: swarm.NewContext(context.TODO(), "test", "na"),
-			Object: &events.S3EventRecord{
-				S3: events.S3Entity{
-					Bucket: events.S3Bucket{Name: "craft"},
-					Object: events.S3Object{Key: "github.com/fogfish/craft/test.cdk.context.json"},
-				},
-			},
-		}
-		msg := <-ack
-		it.Then(t).Should(it.Nil(msg.Ctx.Error))
-	})
-
-	t.Run("SubmitJobFailed", func(t *testing.T) {
-		rcv <- swarm.Msg[*events.S3EventRecord]{
-			Ctx: swarm.NewContext(context.TODO(), "test", "na"),
-			Object: &events.S3EventRecord{
-				S3: events.S3Entity{
-					Bucket: events.S3Bucket{Name: "craft"},
-					Object: events.S3Object{Key: "github.com/fogfish/unexpected/test.cdk.context.json"},
-				},
-			},
-		}
-		msg := <-ack
-		it.Then(t).ShouldNot(it.Nil(msg.Ctx.Error))
-	})
-
-	t.Run("EmptyEvent", func(t *testing.T) {
-		rcv <- swarm.Msg[*events.S3EventRecord]{
-			Ctx: swarm.NewContext(context.TODO(), "test", "na"),
-		}
-		msg := <-ack
-		it.Then(t).Should(it.Nil(msg.Ctx.Error))
-	})
-
-	t.Run("InvalidKey", func(t *testing.T) {
-		rcv <- swarm.Msg[*events.S3EventRecord]{
-			Ctx: swarm.NewContext(context.TODO(), "test", "na"),
-			Object: &events.S3EventRecord{
-				S3: events.S3Entity{
-					Object: events.S3Object{Key: "some-key"},
-				},
-			},
-		}
-		msg := <-ack
-		it.Then(t).Should(it.Nil(msg.Ctx.Error))
-	})
+type fsys struct {
+	returnVal []byte
 }
+
+func (f fsys) Open(name string) (fs.File, error) { return file(f.returnVal), nil }
