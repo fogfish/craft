@@ -10,7 +10,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"testing"
@@ -24,12 +23,32 @@ import (
 	"github.com/fogfish/swarm"
 )
 
-func TestSubmitJob(t *testing.T) {
-	service := mockService(`{
+const (
+	cdkContext = `{"acc": "test"}`
+
+	eventCraft = `{
 	  "uid": "123-456-789",
 		"module": "github.com/fogfish/craft",
 		"context": {"acc": "test"}
-	}`)
+	}`
+
+	eventUnexpected = `{
+	  "uid": "123-456-789",
+		"module": "github.com/fogfish/unexpected",
+		"context": {"acc": "test"}
+	}`
+
+	eventCorrupted = `{`
+
+	eventUndefined = `{}`
+
+	eventWrongType = `{
+		"context": {"acc": "test"}
+	}`
+)
+
+func TestSubmitJob(t *testing.T) {
+	service := mockService(eventCraft, nil)
 
 	rcv := make(chan swarm.Msg[*events.S3EventRecord])
 	ack := make(chan swarm.Msg[*events.S3EventRecord])
@@ -49,11 +68,7 @@ func TestSubmitJob(t *testing.T) {
 }
 
 func TestSubmitJobFailed(t *testing.T) {
-	service := mockService(`{
-	  "uid": "123-456-789",
-		"module": "github.com/fogfish/unexpected",
-		"context": {"acc": "test"}
-	}`)
+	service := mockService(eventUnexpected, nil)
 
 	rcv := make(chan swarm.Msg[*events.S3EventRecord])
 	ack := make(chan swarm.Msg[*events.S3EventRecord])
@@ -72,10 +87,8 @@ func TestSubmitJobFailed(t *testing.T) {
 	it.Then(t).ShouldNot(it.Nil(msg.Ctx.Error))
 }
 
-func TestInvalidEvent(t *testing.T) {
-	service := mockService(`{
-		"context": {"acc": "test"}
-	}`)
+func TestS3AccessFailed(t *testing.T) {
+	service := mockService(eventCraft, fmt.Errorf("Access Denied"))
 
 	rcv := make(chan swarm.Msg[*events.S3EventRecord])
 	ack := make(chan swarm.Msg[*events.S3EventRecord])
@@ -94,12 +107,36 @@ func TestInvalidEvent(t *testing.T) {
 	it.Then(t).ShouldNot(it.Nil(msg.Ctx.Error))
 }
 
-func TestUnknownEvent(t *testing.T) {
-	service := mockService(`{
-	  "uid": "123-456-789",
-		"module": "github.com/fogfish/craft",
-		"context": {"acc": "test"}
-	}`)
+func TestCorruptedEvents(t *testing.T) {
+	for name, evt := range map[string]string{
+		"Corrupted": eventCorrupted,
+		"Undefined": eventUndefined,
+		"WrongType": eventWrongType,
+	} {
+		t.Run(name, func(t *testing.T) {
+			service := mockService(evt, nil)
+
+			rcv := make(chan swarm.Msg[*events.S3EventRecord])
+			ack := make(chan swarm.Msg[*events.S3EventRecord])
+			go service.Run(rcv, ack)
+
+			rcv <- swarm.Msg[*events.S3EventRecord]{
+				Ctx: swarm.NewContext(context.TODO(), "test", "na"),
+				Object: &events.S3EventRecord{
+					S3: events.S3Entity{
+						Bucket: events.S3Bucket{Name: "test-s3"},
+						Object: events.S3Object{Key: "test.craft.event.json"},
+					},
+				},
+			}
+			msg := <-ack
+			it.Then(t).ShouldNot(it.Nil(msg.Ctx.Error))
+		})
+	}
+}
+
+func TestUnknownS3Event(t *testing.T) {
+	service := mockService(eventCraft, nil)
 
 	rcv := make(chan swarm.Msg[*events.S3EventRecord])
 	ack := make(chan swarm.Msg[*events.S3EventRecord])
@@ -129,12 +166,7 @@ func TestUnknownEvent(t *testing.T) {
 
 //------------------------------------------------------------------------------
 
-func mockService(evt string) *Service {
-	var ctx struct {
-		Context json.RawMessage `json:"context"`
-	}
-	json.Unmarshal([]byte(evt), &ctx)
-
+func mockService(evt string, err error) *Service {
 	batch := &mock{
 		returnVal: &batch.SubmitJobOutput{},
 		expectVal: &batch.SubmitJobInput{
@@ -144,7 +176,7 @@ func mockService(evt string) *Service {
 				Environment: []types.KeyValuePair{
 					{Name: aws.String("CRAFT_BUCKET"), Value: aws.String("test-s3")},
 					{Name: aws.String("CRAFT_MODULE"), Value: aws.String("github.com/fogfish/craft")},
-					{Name: aws.String("CRAFT_CDK_CONTEXT"), Value: aws.String(string(ctx.Context))},
+					{Name: aws.String("CRAFT_CDK_CONTEXT"), Value: aws.String(cdkContext)},
 				},
 			},
 		},
@@ -152,7 +184,7 @@ func mockService(evt string) *Service {
 
 	scheduler := scheduler.New(batch, "test-queue", "test-job", "test-s3")
 
-	fsys := fsys{returnVal: []byte(evt)}
+	fsys := fsys{returnVal: []byte(evt), returnErr: err}
 
 	return New(fsys, scheduler)
 }
@@ -193,6 +225,9 @@ func (f file) Read(b []byte) (int, error) { return copy(b, f), nil }
 
 type fsys struct {
 	returnVal []byte
+	returnErr error
 }
 
-func (f fsys) Open(name string) (fs.File, error) { return file(f.returnVal), nil }
+func (f fsys) Open(name string) (fs.File, error) {
+	return file(f.returnVal), f.returnErr
+}
