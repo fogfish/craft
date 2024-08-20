@@ -10,6 +10,7 @@ package main
 
 import (
 	"os"
+	"strconv"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/jsii-runtime-go"
@@ -34,6 +35,9 @@ func main() {
 			StackProps:       config,
 			Version:          vsn.Get("craft", "main"),
 			SourceCodeBucket: FromContext(app, "source-code"),
+			Cpu:              FromContextFloat(app, "cpu"),
+			Memory:           FromContextFloat(app, "mem"),
+			Spot:             FromContextBool(app, "spot"),
 		},
 	)
 
@@ -49,6 +53,31 @@ func FromContext(app awscdk.App, key string) string {
 		return v
 	default:
 		return ""
+	}
+}
+
+func FromContextFloat(app awscdk.App, key string) *float64 {
+	v := FromContext(app, key)
+	if v == "" {
+		return nil
+	}
+
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		panic(err)
+	}
+
+	return jsii.Number(f)
+}
+
+func FromContextBool(app awscdk.App, key string) *bool {
+	switch FromContext(app, key) {
+	case "on":
+		return jsii.Bool(true)
+	case "off":
+		return jsii.Bool(false)
+	default:
+		return nil
 	}
 }
 

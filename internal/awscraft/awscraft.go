@@ -30,10 +30,28 @@ import (
 
 type CraftProps struct {
 	*awscdk.StackProps
-	Version          tagver.Version
+	Version tagver.Version
+
+	// AWS S3 Bucket Identity for keeping source code
 	SourceCodeBucket string
-	MaxvCpus         *float64
-	Spot             *bool
+
+	// Max number of CPUs allocated for the cluster
+	MaxvCpus *float64
+
+	// The number of vCPUs reserved for the container.
+	//
+	// Default: 1.0
+	Cpu *float64
+
+	// The memory reserved for the container in GBs.
+	// The memory have to be aligned with reserved CPUs
+	// (e.g. 4 vCPU requires 8GB, 8 vCPU requires 16GB)
+	//
+	// Default: 4 GB
+	Memory *float64
+
+	// Enable spot instances
+	Spot *bool
 }
 
 type Craft struct {
@@ -52,6 +70,18 @@ func New(app awscdk.App, props *CraftProps) *Craft {
 		jsii.String(props.Version.Tag("craft")),
 		props.StackProps,
 	)
+
+	if props.Spot == nil {
+		props.Spot = jsii.Bool(true)
+	}
+
+	if props.Cpu == nil {
+		props.Cpu = jsii.Number(1.0)
+	}
+
+	if props.Memory == nil {
+		props.Memory = jsii.Number(4.0)
+	}
 
 	c := &Craft{Stack: stack}
 	c.createNetworking(props)
@@ -130,6 +160,14 @@ func (c *Craft) createRole(props *CraftProps) {
 						}),
 					},
 				}),
+				"craft": awsiam.NewPolicyDocument(&awsiam.PolicyDocumentProps{
+					Statements: &[]awsiam.PolicyStatement{
+						awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+							Actions:   jsii.Strings("sts:AssumeRole"),
+							Resources: jsii.Strings("arn:aws:iam::*:role/craft-*"),
+						}),
+					},
+				}),
 			},
 		},
 	)
@@ -153,8 +191,8 @@ func (c *Craft) createJobDeploy(props *CraftProps) {
 
 	container := awsbatch.NewEcsFargateContainerDefinition(c.Stack, jsii.String("Container"),
 		&awsbatch.EcsFargateContainerDefinitionProps{
-			Cpu:                    jsii.Number(1.0),
-			Memory:                 awscdk.Size_Gibibytes(jsii.Number(4.0)),
+			Cpu:                    props.Cpu,
+			Memory:                 awscdk.Size_Gibibytes(props.Memory),
 			Image:                  awsecs.ContainerImage_FromDockerImageAsset(asset),
 			AssignPublicIp:         jsii.Bool(true),
 			JobRole:                c.role,
