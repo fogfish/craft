@@ -19,12 +19,10 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awslambdaeventsources"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awss3"
 	"github.com/aws/jsii-runtime-go"
-	"github.com/fogfish/craft/internal/events"
 	"github.com/fogfish/scud"
-	"github.com/fogfish/swarm/broker/events3"
+	"github.com/fogfish/swarm/broker/eventbridge"
 	"github.com/fogfish/tagver"
 )
 
@@ -59,10 +57,10 @@ type Craft struct {
 	vpc        awsec2.Vpc
 	compute    awsbatch.FargateComputeEnvironment
 	queue      awsbatch.IJobQueue
-	sourceCode awss3.IBucket
-	broker     *events3.Broker
 	role       awsiam.Role
 	jobDeploy  awsbatch.EcsJobDefinition
+	sourceCode awss3.IBucket
+	broker     *eventbridge.Broker
 }
 
 func New(app awscdk.App, props *CraftProps) *Craft {
@@ -84,15 +82,24 @@ func New(app awscdk.App, props *CraftProps) *Craft {
 	}
 
 	c := &Craft{Stack: stack}
+	c.createSourceCode(props)
+
 	c.createNetworking(props)
 	c.createCompute(props)
 	c.createQueue(props)
-	c.createBroker(props)
 	c.createRole(props)
 	c.createJobDeploy(props)
 	c.createGateway(props)
 
 	return c
+}
+
+func (c *Craft) createSourceCode(props *CraftProps) {
+	c.sourceCode = awss3.NewBucket(c.Stack, jsii.String("Bucket"),
+		&awss3.BucketProps{
+			BucketName: jsii.String(props.SourceCodeBucket),
+		},
+	)
 }
 
 func (c *Craft) createNetworking(props *CraftProps) {
@@ -130,16 +137,6 @@ func (c *Craft) createQueue(props *CraftProps) {
 			ComputeEnvironments: &[]*awsbatch.OrderedComputeEnvironment{
 				{Order: jsii.Number(1.0), ComputeEnvironment: c.compute},
 			},
-		},
-	)
-}
-
-func (c *Craft) createBroker(props *CraftProps) {
-	c.broker = events3.NewBroker(c.Stack, jsii.String("Broker"), nil)
-
-	c.sourceCode = c.broker.NewBucket(
-		&awss3.BucketProps{
-			BucketName: jsii.String(props.Version.Tag(props.SourceCodeBucket)),
 		},
 	)
 }
@@ -209,18 +206,14 @@ func (c *Craft) createJobDeploy(props *CraftProps) {
 }
 
 func (c *Craft) createGateway(props *CraftProps) {
-	sink := c.broker.NewSink(
-		&events3.SinkProps{
-			// Note: the default property of EventSource captures OBJECT_CREATED and OBJECT_REMOVED events
-			EventSource: &awslambdaeventsources.S3EventSourceProps{
-				Events: &[]awss3.EventType{
-					awss3.EventType_OBJECT_CREATED,
-				},
-				Filters: &[]*awss3.NotificationKeyFilter{
-					{Suffix: jsii.String(events.EVENT_CRAFT)},
-				},
-			},
-			Lambda: &scud.FunctionGoProps{
+	c.broker = eventbridge.NewBroker(c.Stack, jsii.String("Broker"), nil)
+	bus := c.broker.NewEventBus(nil)
+
+	f := c.broker.NewSink(
+		&eventbridge.SinkProps{
+			Source:     []string{*bus.EventBusName()},
+			Categories: []string{"EventCraft"},
+			Function: &scud.FunctionGoProps{
 				SourceCodeModule: "github.com/fogfish/craft",
 				SourceCodeLambda: "internal/cmd/lambda/gateway",
 				FunctionProps: &awslambda.FunctionProps{
@@ -237,6 +230,6 @@ func (c *Craft) createGateway(props *CraftProps) {
 		},
 	)
 
-	c.jobDeploy.GrantSubmitJob(sink.Handler, c.queue)
-	c.broker.Bucket.GrantRead(sink.Handler, nil)
+	c.jobDeploy.GrantSubmitJob(f.Handler, c.queue)
+	// c.sourceCode.GrantRead(f.Handler, nil)
 }

@@ -27,6 +27,20 @@
 
 The application defines AWS CDK solution for serverless (aws cdk) applications orchestrations in the context of SaaS development. It builds AWS Cloud infrastructure and services for management of cloud resources as response to "business events".
 
+- [Inspiration](#inspiration)
+- [Getting started](#getting-started)
+- [Interfaces](#interfaces)
+  - [Access Management](#access-management)
+  - [Templates](#templates)
+  - [Events](#events)
+- [FAQ](#faq)
+  - [Why not use standard CI/CD?](#why-not-use-standard-cicd)
+  - [Why not use AWS CodeBuild?](#why-not-use-aws-codebuild)
+  - [What are the advantages of AWS Batch?](#what-are-the-advantages-of-aws-batch)
+- [How To Contribute](#how-to-contribute)
+  - [commit message](#commit-message)
+  - [bugs](#bugs)
+- [License](#license)
 
 ## Inspiration
 
@@ -62,13 +76,15 @@ Note: Docker is required for building and running the solution because the AWS C
 
 ## Interfaces
 
-The solution implements two type of interfaces implemented over AWS S3 (1) for definition of cloud resource templates and (2) for business events. 
+The solution implements two type of interfaces:
+- AWS S3 for definition of cloud resource templates;
+- AWS EventBridge for "business" events.
 
 ### Access Management
 
-The access management is controlled by AWS IAM thought definition of permissions to provisioned S3 bucket.
+The access management is controlled by AWS IAM thought definition of permissions on publishing events to the instances of AWS EventBridge.
 
-### (1) Templates
+### Templates
 
 The template is AWS CDK application tailored for your needs, implemented on any supported language. See example of [minimalistic template](./examples/template/).
 Upload templates into S3 bucket where they be served.
@@ -77,20 +93,27 @@ Upload templates into S3 bucket where they be served.
 aws s3 cp examples/template s3://my-s3-bucket/github.com/fogfish/craft/examples/template --recursive
 ```
 
-### (2) Events
+### Events
 
-The event is JSON object that should be compliant to [schema](./internal/events/events.go). Clients writes JSON object into S3 bucket to trigger the crafting job.
+The event is JSON object that should be compliant to [schema](./internal/events/events.go). Clients produces events (JSON object) into AWS EventBridge to trigger the crafting job. We recommend [swarm](https://github.com/fogfish/swarm) library for programmable emission of events.   
+
+For testing purposes, you can use AWS CLI. See the [example event](./examples/template/event.json)
 
 ```bash
-echo '{
-  "uid": "123-456-789",
-  "module": "github.com/fogfish/craft/examples/template",
-  "context": {
-    "acc": "demo"
-  }
-}' > demo.craft.event.json
+aws events put-events --entries file://examples/template/event.json
+```
 
-aws s3 cp demo.craft.event.json s3://my-s3-bucket/demo.craft.event.json
+```json
+{
+  "Source": "craft-main",
+  "EventBusName": "craft-main",
+  "DetailType": "EventCraft",
+  "Detail": "{
+    \"uid\":\"123-456-789\",
+    \"module\":\"github.com/fogfish/craft/examples/template\",
+    \"context\":{\"acc\":\"demo\"}
+  }"
+}
 ```
 
 Note: unique event id (`uid`) allows to follow up the deployment status using AWS Batch ListJobs API: 
@@ -100,17 +123,17 @@ aws batch list-jobs --job-queue craft-vX --filters name=JOB_NAME,values=123-456-
 ```
 
 
-# FAQ
+## FAQ
 
-## Why not use standard CI/CD?
+### Why not use standard CI/CD?
 
 Our solution decouples the deployment pipelines of software components from tenant-specific feature provisioning. Utilizing GitHub Actions as the primary CI/CD tool presents challenges in maintaining proper isolation between code and configuration.
 
-## Why not use AWS CodeBuild?
+### Why not use AWS CodeBuild?
 
 Currently, AWS CodeBuild offers EC2 and Lambda as compute environments. EC2 is relatively slow in provisioning resources, whereas Lambda's 15-minute execution limit is often insufficient for handling all edge cases.
 
-## What are the advantages of AWS Batch?
+### What are the advantages of AWS Batch?
 
 AWS Batch supports Fargate and allows the use of spot instances, offering a robust "serverless" approach for building compute environments. It simplifies the configuration of containers for job definitions and enables the submission of orchestration jobs through queue-like interfaces. This solution is highly scalable and suitable for any type of job required for running SaaS applications.
 

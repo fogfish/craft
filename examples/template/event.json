@@ -1,0 +1,8 @@
+[
+  {
+    "Source": "craft-main",
+    "EventBusName": "craft-main",
+    "DetailType": "EventCraft",
+    "Detail": "{\"uid\":\"123-456-789\", \"module\":\"github.com/fogfish/craft/examples/template\", \"context\":{\"acc\":\"demo\"}}"
+  }
+]
