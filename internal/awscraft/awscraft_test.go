@@ -46,9 +46,8 @@ func TestAwsCraft(t *testing.T) {
 		jsii.String("AWS::Batch::JobQueue"):                  jsii.Number(1),
 		jsii.String("AWS::Batch::JobDefinition"):             jsii.Number(1),
 		jsii.String("AWS::S3::Bucket"):                       jsii.Number(1),
-		jsii.String("Custom::S3BucketNotifications"):         jsii.Number(1),
-		jsii.String("AWS::IAM::Role"):                        jsii.Number(5),
-		jsii.String("AWS::Lambda::Function"):                 jsii.Number(3),
+		jsii.String("AWS::IAM::Role"):                        jsii.Number(4),
+		jsii.String("AWS::Lambda::Function"):                 jsii.Number(2),
 		jsii.String("Custom::LogRetention"):                  jsii.Number(1),
 	}
 

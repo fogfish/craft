@@ -15,12 +15,13 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/batch"
+
+	"github.com/fogfish/craft/internal/events"
 	"github.com/fogfish/craft/internal/scheduler"
 	_ "github.com/fogfish/logger/v3"
-	"github.com/fogfish/stream"
 	"github.com/fogfish/swarm"
-	"github.com/fogfish/swarm/broker/events3"
-	"github.com/fogfish/swarm/queue"
+	"github.com/fogfish/swarm/broker/eventbridge"
+	"github.com/fogfish/swarm/dequeue"
 )
 
 func main() {
@@ -31,29 +32,28 @@ func main() {
 		panic(err)
 	}
 
-	batch := batch.NewFromConfig(aws)
-
 	// AWS Batch Job Scheduler
 	scheduler := scheduler.New(
-		batch,
+		batch.NewFromConfig(aws),
 		os.Getenv("CONFIG_BATCH_QUEUE"),
 		os.Getenv("CONFIG_BATCH_JOB_CRAFT"),
 		os.Getenv("CONFIG_S3"),
 	)
 
-	// Mount S3 as file system
-	s3fs, err := stream.NewFS(os.Getenv("CONFIG_S3"))
+	// Run event consumption loop
+	service := New(scheduler)
+
+	q, err := eventbridge.NewDequeuer("default",
+		eventbridge.WithConfig(
+			swarm.WithLogStdErr(),
+		),
+	)
 	if err != nil {
-		slog.Error("fatal failure of s3 client", "err", err)
+		slog.Error("fatal failure of eventbrige client", "err", err)
 		panic(err)
 	}
 
-	// Run event consumption loop
-	service := New(s3fs, scheduler)
-
-	q := queue.Must(events3.New(os.Getenv("CONFIG_S3"), swarm.WithLogStdErr()))
-
-	go service.Run(events3.Dequeue(q))
+	go service.Run(dequeue.Typed[events.EventCraft](q))
 
 	q.Await()
 }
