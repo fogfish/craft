@@ -231,5 +231,4 @@ func (c *Craft) createGateway(props *CraftProps) {
 	)
 
 	c.jobDeploy.GrantSubmitJob(f.Handler, c.queue)
-	// c.sourceCode.GrantRead(f.Handler, nil)
 }
