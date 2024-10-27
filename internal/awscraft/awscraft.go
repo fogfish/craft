@@ -97,7 +97,7 @@ func New(app awscdk.App, props *CraftProps) *Craft {
 func (c *Craft) createSourceCode(props *CraftProps) {
 	c.sourceCode = awss3.NewBucket(c.Stack, jsii.String("Bucket"),
 		&awss3.BucketProps{
-			BucketName: jsii.String(props.SourceCodeBucket),
+			BucketName: jsii.String(props.Version.Tag(props.SourceCodeBucket)),
 		},
 	)
 }
