@@ -1,5 +1,9 @@
 FROM golang:alpine
 
+## Version of the container
+RUN echo "v1" > /version 
+
+##
 RUN apk add --update nodejs npm aws-cli
 RUN npm install -g aws-cdk
 
